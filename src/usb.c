@@ -106,6 +106,26 @@ int bulk_transfer(int endpoint, uint8_t *serial_buf, int count, unsigned int tim
   return actual_length;
 }
 
+int bulk_async_transfer(int endpoint, uint8_t *serial_buf, int count, unsigned int timeout_ms, void (*f)(struct libusb_transfer*)) {
+  int completed = 0;
+
+  struct libusb_transfer *transfer;
+  transfer = libusb_alloc_transfer(1);
+  libusb_fill_bulk_stream_transfer(transfer, devh, endpoint, 0, serial_buf, count, f, &completed, timeout_ms);
+  int r = libusb_submit_transfer(transfer);
+
+  if (r < 0) {
+    SDL_Log("Error");
+    libusb_free_transfer(transfer);
+    return r;
+  }
+  return 0;
+}
+
+int async_read(uint8_t *serial_buf, int count, void (*f)(struct libusb_transfer*)) {
+  return bulk_async_transfer(ep_in_addr, serial_buf, count, 300, f);
+}
+
 int blocking_write(void *buf,
                    int count, unsigned int timeout_ms) {
   return bulk_transfer(ep_out_addr, buf, count, timeout_ms);

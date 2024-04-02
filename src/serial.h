@@ -20,6 +20,8 @@ int reset_display();
 int enable_and_reset_display();
 int disconnect();
 int serial_read(uint8_t *serial_buf, int count);
+int bulk_async_transfer(int endpoint, uint8_t *serial_buf, int count, unsigned int timeout_ms, void (*f)(struct libusb_transfer*));
+int async_read(uint8_t *serial_buf, int count, void (*f)(struct libusb_transfer*));
 int send_msg_controller(uint8_t input);
 int send_msg_keyjazz(uint8_t note, uint8_t velocity);
 

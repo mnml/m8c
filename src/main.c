@@ -7,6 +7,7 @@
 
 #include <SDL.h>
 #include <signal.h>
+#include <libusb.h>
 
 #include "SDL2_inprint.h"
 #include "audio.h"
@@ -22,12 +23,106 @@ enum state { QUIT, WAIT_FOR_DEVICE, RUN };
 enum state run = WAIT_FOR_DEVICE;
 uint8_t need_display_reset = 0;
 
+static slip_handler_s slip;
+uint16_t zerobyte_packets = 0; // used to detect device disconnection
+uint8_t *serial_buf = 0;
+int port_inited = 0;
+config_params_s conf;
+
+const int command_size = 4096;
+int writeCursor = 0;
+int readCursor = 0;
+uint8_t **command;
+uint32_t *command_sizes;
+
 // Handles CTRL+C / SIGINT
 void intHandler(int dummy) { run = QUIT; }
 
 void close_serial_port() { disconnect(); }
 
+int pullCommand(uint8_t *data, uint32_t size) {
+  free(command[writeCursor % command_size]);
+  command[writeCursor % command_size] = malloc(size * sizeof(uint8_t));
+  memcpy(command[writeCursor % command_size], data, size);
+  command_sizes[writeCursor % command_size] = size;
+  writeCursor++;
+  return 1;
+}
+
+int popCommand(uint8_t **data, uint32_t *size) {
+  int compare = writeCursor - readCursor;
+  if (compare == 0) return 0;
+  *data = command[readCursor % command_size];
+  *size = command_sizes[readCursor % command_size];
+  readCursor++;
+  return compare;
+}
+
+void callback(struct libusb_transfer *xfr) {
+  if (xfr->status != LIBUSB_TRANSFER_COMPLETED) {
+    if (libusb_submit_transfer(xfr) < 0) {
+      SDL_Log("error re-submitting URB\n");
+    }
+    return;
+  }
+
+  serial_buf = xfr->buffer;
+  int bytes_read = xfr->actual_length;
+  if (bytes_read < 0) {
+    SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "Error %d reading serial. \n",
+                    (int)bytes_read);
+    run = QUIT;
+    // break;
+  } else if (bytes_read > 0) {
+    // input from device: reset the zero byte counter and create a
+    // pointer to the serial buffer
+    zerobyte_packets = 0;
+    uint8_t *cur = serial_buf;
+    const uint8_t *end = serial_buf + bytes_read;
+    while (cur < end) {
+      // process the incoming bytes into commands and draw them
+      int n = slip_read_byte(&slip, *(cur++));
+      if (n != SLIP_NO_ERROR) {
+        if (n == SLIP_ERROR_INVALID_PACKET) {
+          reset_display();
+        } else {
+          SDL_LogError(SDL_LOG_CATEGORY_ERROR, "SLIP error %d\n", n);
+        }
+      }
+    }
+  } else {
+    // zero byte packet, increment counter
+    zerobyte_packets++;
+    if (zerobyte_packets > conf.wait_packets) {
+      zerobyte_packets = 0;
+
+      // try opening the serial port to check if it's alive
+      if (check_serial_port()) {
+        // the device is still there, carry on
+        // break;
+      } else {
+        port_inited = 0;
+        run = WAIT_FOR_DEVICE;
+        close_serial_port();
+        if (conf.audio_enabled == 1) {
+          audio_destroy();
+        }
+        /* we'll make one more loop to see if the device is still there
+         * but just sending zero bytes. if it doesn't get detected when
+         * resetting the port, it will disconnect */
+      }
+    }
+    // break;
+  }
+
+  if (libusb_submit_transfer(xfr) < 0) {
+    SDL_Log("error re-submitting URB\n");
+  }
+}
+
 int main(int argc, char *argv[]) {
+  command = malloc(sizeof(uint8_t *) * command_size);
+  command_sizes = malloc(sizeof(uint32_t *) * command_size);
 
   if(argc == 2 && SDL_strcmp(argv[1], "--list") == 0) {
     return list_devices();
@@ -41,13 +136,13 @@ int main(int argc, char *argv[]) {
 
   // Initialize the config to defaults read in the params from the
   // configfile if present
-  config_params_s conf = init_config();
+  conf = init_config();
 
   // TODO: take cli parameter to override default configfile location
   read_config(&conf);
 
   // allocate memory for serial buffer
-  uint8_t *serial_buf = SDL_malloc(serial_read_size);
+  serial_buf = SDL_malloc(serial_read_size);
 
   static uint8_t slip_buffer[serial_read_size]; // SLIP command buffer
 
@@ -57,15 +152,12 @@ int main(int argc, char *argv[]) {
   static const slip_descriptor_s slip_descriptor = {
       .buf = slip_buffer,
       .buf_size = sizeof(slip_buffer),
-      .recv_message = process_command, // the function where complete slip
+      .recv_message = pullCommand,     // the function where complete slip
                                        // packets are processed further
   };
 
-  static slip_handler_s slip;
-
   uint8_t prev_input = 0;
   uint8_t prev_note = 0;
-  uint16_t zerobyte_packets = 0; // used to detect device disconnection
 
   signal(SIGINT, intHandler);
   signal(SIGTERM, intHandler);
@@ -97,7 +189,7 @@ int main(int argc, char *argv[]) {
   // main loop begin
   do {
     // try to init serial port
-    int port_inited = init_serial(1, preferred_device);
+    port_inited = init_serial(1, preferred_device);
     // if port init was successful, try to enable and reset display
     if (port_inited == 1 && enable_and_reset_display() == 1) {
       // if audio routing is enabled, try to initialize audio devices
@@ -107,6 +199,7 @@ int main(int argc, char *argv[]) {
         reset_display();
       }
       run = RUN;
+      async_read(serial_buf, serial_read_size, callback);
     } else {
       SDL_LogCritical(SDL_LOG_CATEGORY_ERROR,
                       "Device not detected on begin loop.");
@@ -159,6 +252,7 @@ int main(int argc, char *argv[]) {
               run = RUN;
               port_inited = 1;
               screensaver_destroy();
+              async_read(serial_buf, serial_read_size, callback);
             } else {
               SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "Device not detected.");
               run = QUIT;
@@ -225,55 +319,11 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      while (1) {
-        // read serial port
-        int bytes_read = serial_read(serial_buf, serial_read_size);
-        if (bytes_read < 0) {
-          SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "Error %d reading serial. \n",
-                          (int)bytes_read);
-          run = QUIT;
-          break;
-        } else if (bytes_read > 0) {
-          // input from device: reset the zero byte counter and create a
-          // pointer to the serial buffer
-          zerobyte_packets = 0;
-          uint8_t *cur = serial_buf;
-          const uint8_t *end = serial_buf + bytes_read;
-          while (cur < end) {
-            // process the incoming bytes into commands and draw them
-            int n = slip_read_byte(&slip, *(cur++));
-            if (n != SLIP_NO_ERROR) {
-              if (n == SLIP_ERROR_INVALID_PACKET) {
-                reset_display();
-              } else {
-                SDL_LogError(SDL_LOG_CATEGORY_ERROR, "SLIP error %d\n", n);
-              }
-            }
-          }
-        } else {
-          // zero byte packet, increment counter
-          zerobyte_packets++;
-          if (zerobyte_packets > conf.wait_packets) {
-            zerobyte_packets = 0;
+      uint8_t *com;
+      uint32_t size;
 
-            // try opening the serial port to check if it's alive
-            if (check_serial_port()) {
-              // the device is still there, carry on
-              break;
-            } else {
-              port_inited = 0;
-              run = WAIT_FOR_DEVICE;
-              close_serial_port();
-              if (conf.audio_enabled == 1) {
-                audio_destroy();
-              }
-              /* we'll make one more loop to see if the device is still there
-               * but just sending zero bytes. if it doesn't get detected when
-               * resetting the port, it will disconnect */
-            }
-          }
-          break;
-        }
+      while (popCommand(&com, &size) > 0) {
+        process_command(com, size);
       }
       render_screen();
       SDL_Delay(conf.idle_ms);

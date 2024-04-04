@@ -1,4 +1,43 @@
-# m8c
+# m8c for RG35XX Plus and RG35XX H
+
+This has only been tested with [Batocera](https://github.com/rg35xx-cfw/rg35xx-cfw.github.io/releases) and [muOS](https://muos.dev/).
+
+### Build instructions
+```bash
+wget https://github.com/rg35xx-cfw/rg35xx-cfw.github.io/releases/download/rg35xx_plus_h_sdk_20240207/arm-buildroot-linux-gnueabihf_sdk-buildroot.tar.gz
+tar xzvf arm-buildroot-linux-gnueabihf_sdk-buildroot.tar.gz
+arm-buildroot-linux-gnueabihf_sdk-buildroot/relocate-sdk.sh
+
+git clone https://github.com/mnml/m8c-rg35xx-plush.git
+cd m8c-rg35xx-plush
+
+export XTOOL="../arm-buildroot-linux-gnueabihf_sdk-buildroot"
+export XHOST="arm-buildroot-linux-gnueabihf"
+export PATH="${PATH}:$XTOOL/bin"
+export SYSROOT="$XTOOL/$XHOST/sysroot"
+export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig"
+export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+
+make libusb CC="$XHOST-gcc"
+```
+
+### Running (tested on RG35XX H with muOS)
+
+Place a script like this in `/ROMS/Apps`, create a .m8c folder, and place the executable inside. After a first run, the settings under `/ROMS/Apps/.m8c/.local/share/m8c/config.ini` may need to be changed (particularly, `audio_enabled=true`)
+
+```bash
+#!/bin/sh
+
+PORTS_FOLDER=$(realpath "$(dirname "$0")")
+GAMEDIR="$PORTS_FOLDER/.m8c"
+
+chmod +x "$GAMEDIR"/m8c
+cd "$GAMEDIR" || exit
+
+HOME="$GAMEDIR" SDL_ASSERT=always_ignore SDL_GAMECONTROLLERCONFIG="19000000010000000100000000010000,Deeplay-keys,a:b3,b:b4,x:b6,y:b5,leftshoulder:b7,rightshoulder:b8,lefttrigger:b13,righttrigger:b14,guide:b11,start:b10,back:b9,dpup:h0.1,dpleft:h0.8,dpright:h0.2,dpdown:h0.4,volumedown:b1,volumeup:b2,leftx:a0,lefty:a1,leftstick:b12,rightx:a2,righty:a3,rightstick:b15,platform:Linux," ./m8c
+```
+
+---
 
 ## Introduction
 

@@ -1,3 +1,7 @@
+# New build for KNULLI CFW with better audio: https://gist.github.com/mnml/12f75bbf16eac4def15ba72cf1b11926#file-m8c-rg35xx-splush-zip
+
+---
+
 # m8c for RG35XX Plus and RG35XX H
 
 This has only been tested with [Batocera](https://github.com/rg35xx-cfw/rg35xx-cfw.github.io/releases) and [muOS](https://muos.dev/).
